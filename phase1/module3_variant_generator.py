@@ -53,7 +53,9 @@ class BackTranslationStrategy:
         """Single, deterministic translation to French (the pivot step)."""
         inputs = self.tok_en_fr(text, return_tensors="pt").to(self.device)
         with torch.no_grad():
-            output_ids = self.model_en_fr.generate(**inputs, max_new_tokens=64, num_beams=4)
+            output_ids = self.model_en_fr.generate(
+                **inputs, max_new_tokens=64, max_length=None, num_beams=4
+            )
         return self.tok_en_fr.decode(output_ids[0], skip_special_tokens=True)
 
     def _translate_to_english_variants(self, french_text, n=10):
@@ -67,9 +69,14 @@ class BackTranslationStrategy:
             output_ids = self.model_fr_en.generate(
                 **inputs,
                 max_new_tokens=64,
+                max_length=None,
                 do_sample=True,
                 temperature=1.2,
                 top_k=50,
+                num_beams=1,  # override the model's default num_beams=4 --
+                              # pure sampling doesn't need beam search, and
+                              # leaving the default in place conflicts with
+                              # num_return_sequences > num_beams
                 num_return_sequences=n,
             )
         candidates = [
