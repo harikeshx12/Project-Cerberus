@@ -1,0 +1,10 @@
+torch
+transformers
+sentence-transformers
+datasets
+peft
+wandb
+plotly
+spacy
+sentencepiece
+accelerate
