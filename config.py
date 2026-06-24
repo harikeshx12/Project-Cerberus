@@ -1,5 +1,5 @@
 """
-Central config for the project-cerberus project.
+Central config for the adversarial-triad project.
 All paths, model names, and hyperparameters live here so nothing is hardcoded
 inside individual modules.
 """
@@ -29,7 +29,15 @@ for d in (CHECKPOINT_DIR, LOG_DIR, DATA_DIR):
 
 # ---- Models ----
 BASE_MODEL_NAME = "google/flan-t5-base"        # the defender model we're attacking
-NLI_MODEL_NAME = "roberta-large-mnli"          # semantic equivalence classifier base
+
+# NLI_MODEL_NAME points to the fine-tuned Semantic Equivalence Classifier
+# (patched on numeric semantics in Module 1.2b) if it exists on Drive,
+# otherwise falls back to the raw off-the-shelf model. This means every
+# module downstream automatically benefits from the fine-tune without
+# needing to know it happened.
+_FINETUNED_NLI_PATH = os.path.join(CHECKPOINT_DIR, "semantic_equivalence_finetuned")
+NLI_MODEL_NAME = _FINETUNED_NLI_PATH if os.path.exists(_FINETUNED_NLI_PATH) else "roberta-large-mnli"
+
 TRANSLATION_EN_FR = "Helsinki-NLP/opus-mt-en-fr"
 TRANSLATION_FR_EN = "Helsinki-NLP/opus-mt-fr-en"
 PARAPHRASE_BASE_MODEL = "t5-small"             # fine-tuned later on Quora Question Pairs
