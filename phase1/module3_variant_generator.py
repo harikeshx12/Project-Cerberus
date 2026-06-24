@@ -23,9 +23,10 @@ without needing to change how callers use this class.
 
 import os
 import sys
+import math
 
 import torch
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, GPT2LMHeadModel, GPT2TokenizerFast
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import config
@@ -92,36 +93,77 @@ class BackTranslationStrategy:
         return candidates
 
 
+class FluencyFilter:
+    """
+    Catches garbled/non-grammatical text that the semantic equivalence
+    classifier misses (it scores meaning-overlap, not grammaticality --
+    "How many MARSIMES has he got?" can still score high on topic overlap
+    with "How many moons does Mars have?" while being nonsense English).
+
+    Uses GPT-2-small perplexity as a cheap fluency proxy: garbled or
+    broken text gets assigned much higher perplexity (the model is
+    "surprised" by it) than fluent, grammatical English.
+    """
+
+    def __init__(self, device=None, max_perplexity=180.0):
+        self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.max_perplexity = max_perplexity
+
+        print(f"Loading GPT-2 fluency model on {self.device} ...")
+        self.tokenizer = GPT2TokenizerFast.from_pretrained("gpt2")
+        self.model = GPT2LMHeadModel.from_pretrained("gpt2").to(self.device)
+        self.model.eval()
+
+    def perplexity(self, text):
+        """Lower = more fluent/natural. Higher = more likely garbled."""
+        inputs = self.tokenizer(text, return_tensors="pt").to(self.device)
+        if inputs["input_ids"].shape[1] < 2:
+            return float("inf")  # too short to score meaningfully
+
+        with torch.no_grad():
+            outputs = self.model(**inputs, labels=inputs["input_ids"])
+        return math.exp(outputs.loss.item())
+
+    def is_fluent(self, text):
+        ppl = self.perplexity(text)
+        return ppl <= self.max_perplexity, ppl
+
+
 class VariantGenerator:
     """
     Orchestrates variant-generation strategies and filters every candidate
-    through the SemanticEquivalenceClassifier before returning it.
+    through TWO gates before returning it:
+      1. SemanticEquivalenceClassifier — does it mean the same thing?
+      2. FluencyFilter — is it actually grammatical English, or garbled
+         translation noise that happens to share keywords with the original?
 
     Usage:
         gen = VariantGenerator()
         variants = gen.generate("What is the capital of France?", n=10)
-        # -> [{"text": "...", "confidence": 0.94, "strategy": "back_translation"}, ...]
+        # -> [{"text": "...", "confidence": 0.94, "perplexity": 42.1, "strategy": "back_translation"}, ...]
     """
 
     def __init__(self, device=None):
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.back_translation = BackTranslationStrategy(device=self.device)
         self.equivalence_classifier = SemanticEquivalenceClassifier()
+        self.fluency_filter = FluencyFilter(device=self.device)
         # Strategy B (syntactic) and Strategy C (paraphrase) will be
         # initialized here once added.
 
-    def generate(self, query, n=10, min_confidence=0.5):
+    def generate(self, query, n=10, min_confidence=0.5, verbose_rejects=False):
         """
-        Generate up to n semantically-equivalent variants of query.
+        Generate up to n semantically-equivalent, fluent variants of query.
 
-        Over-generates raw candidates (2x n) since some will get filtered
-        out for drifting in meaning or being exact duplicates of the
-        original, then returns the top n by classifier confidence.
+        Over-generates raw candidates (3x n, bumped up from 2x since the
+        fluency filter now rejects some additional candidates) then returns
+        the top n that pass BOTH gates, ranked by semantic confidence.
         """
-        raw_candidates = self.back_translation.generate_candidates(query, n=n * 2)
+        raw_candidates = self.back_translation.generate_candidates(query, n=n * 3)
 
         seen = {query.strip().lower()}
         scored_variants = []
+        rejected = []
 
         for candidate in raw_candidates:
             normalized = candidate.strip().lower()
@@ -130,12 +172,25 @@ class VariantGenerator:
             seen.add(normalized)
 
             result = self.equivalence_classifier.score(query, candidate)
-            if result["label"] == "same" and result["confidence"] >= min_confidence:
-                scored_variants.append({
-                    "text": candidate,
-                    "confidence": result["confidence"],
-                    "strategy": "back_translation",
-                })
+            if not (result["label"] == "same" and result["confidence"] >= min_confidence):
+                rejected.append((candidate, "semantic", result["confidence"]))
+                continue
+
+            fluent, ppl = self.fluency_filter.is_fluent(candidate)
+            if not fluent:
+                rejected.append((candidate, "fluency", ppl))
+                continue
+
+            scored_variants.append({
+                "text": candidate,
+                "confidence": result["confidence"],
+                "perplexity": round(ppl, 1),
+                "strategy": "back_translation",
+            })
+
+        if verbose_rejects:
+            for text, reason, score in rejected:
+                print(f"    [rejected: {reason}, score={score:.1f}] {text}")
 
         scored_variants.sort(key=lambda v: v["confidence"], reverse=True)
         return scored_variants[:n]
@@ -158,13 +213,14 @@ def main():
         print(f"ORIGINAL: {query}")
         print("=" * 60)
 
-        variants = gen.generate(query, n=10)
+        variants = gen.generate(query, n=10, verbose_rejects=True)
 
         if not variants:
-            print("  No variants passed the semantic equivalence filter.")
+            print("  No variants passed both filters.")
         else:
+            print("  KEPT:")
             for i, v in enumerate(variants, 1):
-                print(f"  {i:>2}. (conf={v['confidence']:.3f}) {v['text']}")
+                print(f"  {i:>2}. (conf={v['confidence']:.3f}, ppl={v['perplexity']:.1f}) {v['text']}")
         print()
 
 
