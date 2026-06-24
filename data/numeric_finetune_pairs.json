@@ -1,0 +1,30 @@
+{
+  "_comment": "Fine-tuning pairs for teaching roberta-large-mnli that different arithmetic operations are NOT semantically equivalent, even when phrased similarly. label maps to NLI classes: 'entailment' = same meaning, 'contradiction' = different meaning. Kept separate from the 50-pair validation set so we don't train on what we test against.",
+  "pairs": [
+    {"premise": "What is 12 multiplied by 8?", "hypothesis": "What is 12 divided by 8?", "label": "contradiction"},
+    {"premise": "What is 15 multiplied by 4?", "hypothesis": "What is 15 divided by 4?", "label": "contradiction"},
+    {"premise": "What is 20 plus 5?", "hypothesis": "What is 20 minus 5?", "label": "contradiction"},
+    {"premise": "What is 9 added to 6?", "hypothesis": "What is 9 subtracted from 6?", "label": "contradiction"},
+    {"premise": "What is the product of 7 and 3?", "hypothesis": "What is the quotient of 7 and 3?", "label": "contradiction"},
+    {"premise": "What is the sum of 10 and 4?", "hypothesis": "What is the difference between 10 and 4?", "label": "contradiction"},
+    {"premise": "What is 100 divided by 25?", "hypothesis": "What is 100 multiplied by 25?", "label": "contradiction"},
+    {"premise": "What is 6 squared?", "hypothesis": "What is 6 cubed?", "label": "contradiction"},
+    {"premise": "What is half of 18?", "hypothesis": "What is double 18?", "label": "contradiction"},
+    {"premise": "What is 30 percent of 200?", "hypothesis": "What is 30 plus 200?", "label": "contradiction"},
+    {"premise": "What is the square root of 81?", "hypothesis": "What is 81 squared?", "label": "contradiction"},
+    {"premise": "What is 5 factorial?", "hypothesis": "What is 5 times 5?", "label": "contradiction"},
+    {"premise": "Is 14 greater than 9?", "hypothesis": "Is 14 less than 9?", "label": "contradiction"},
+    {"premise": "What is 3 to the power of 4?", "hypothesis": "What is 4 to the power of 3?", "label": "contradiction"},
+    {"premise": "What is 8 minus 3?", "hypothesis": "What is 3 minus 8?", "label": "contradiction"},
+    {"premise": "What is 12 multiplied by 8?", "hypothesis": "What is the product of 12 and 8?", "label": "entailment"},
+    {"premise": "What is 20 plus 5?", "hypothesis": "What is the sum of 20 and 5?", "label": "entailment"},
+    {"premise": "What is 100 divided by 25?", "hypothesis": "What is the quotient of 100 and 25?", "label": "entailment"},
+    {"premise": "What is 8 minus 3?", "hypothesis": "What is the difference when 3 is taken from 8?", "label": "entailment"},
+    {"premise": "What is half of 18?", "hypothesis": "What is 18 divided by 2?", "label": "entailment"},
+    {"premise": "What is double 18?", "hypothesis": "What is 18 multiplied by 2?", "label": "entailment"},
+    {"premise": "Is 14 greater than 9?", "hypothesis": "Is 9 less than 14?", "label": "entailment"},
+    {"premise": "What is 6 squared?", "hypothesis": "What is 6 multiplied by itself?", "label": "entailment"},
+    {"premise": "What is 30 percent of 200?", "hypothesis": "What is 0.3 multiplied by 200?", "label": "entailment"},
+    {"premise": "What is the square root of 81?", "hypothesis": "What number, when squared, equals 81?", "label": "entailment"}
+  ]
+}
