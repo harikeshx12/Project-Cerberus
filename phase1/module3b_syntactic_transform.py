@@ -186,16 +186,18 @@ class SyntacticTransformer:
         if original_word[0].isupper():
             antonym = antonym.capitalize()
 
-        # Find where to insert "not": if the adjective is preceded by a
-        # determiner ("a good conductor"), "not" goes BEFORE the determiner
-        # ("not a bad conductor"), not directly before the adjective --
-        # "a not bad conductor" is grammatically wrong. Walk backward from
-        # the adjective to find a contiguous det/advmod run to insert before.
+        # Find where to insert "not": if the adjective is immediately
+        # preceded by an article ("a good conductor"), "not" goes BEFORE
+        # the article ("not a bad conductor") -- "a not bad conductor" is
+        # wrong word order. Checking the literal preceding token text
+        # directly (not the dependency label) since my first attempt at
+        # this used dep_ in ("det","advmod") with a head-match condition
+        # that didn't match how spaCy actually parsed this sentence --
+        # confirmed by testing, the fix below is simpler and checks the
+        # actual adjacent token instead of guessing the tree structure.
         insert_idx = idx
-        i = idx - 1
-        while i >= 0 and doc[i].dep_ in ("det", "advmod") and doc[i].head.i == idx:
-            insert_idx = i
-            i -= 1
+        if idx > 0 and doc[idx - 1].text.lower() in ("a", "an", "the"):
+            insert_idx = idx - 1
 
         tokens = [tok.text_with_ws for tok in doc]
         tokens[idx] = antonym + doc[idx].whitespace_
