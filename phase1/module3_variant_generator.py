@@ -147,9 +147,11 @@ class StructuralSanityCheck:
       "Can't you... cant Mars be so amazing. So, how many moons is Mars on?"
       "How many moons? How many moons has Mars?"
 
-    Each fragment reads fine in isolation -- GPT-2 perplexity doesn't
-    penalize it much -- but it's not a clean single-question rephrase of
-    the original. Checked with cheap string heuristics, not a model.
+    Also catches sentence-type drift: a question variant ending in "!" or
+    "." instead of "?" has changed speech act (statement vs. question),
+    which is a real meaning change perplexity doesn't penalize -- e.g.
+    "Who wrote like Romeo and Juliet!" passed both earlier gates despite
+    no longer reading as a question at all.
     """
 
     def __init__(self, max_length_ratio=2.5, max_question_marks=1, max_sentences=1):
@@ -166,6 +168,14 @@ class StructuralSanityCheck:
 
         if candidate.count("?") > self.max_question_marks:
             reasons.append(f"{candidate.count('?')} question marks (looks like multiple questions)")
+
+        # If the original is a question, the variant should still read as one.
+        # Catches cases like "...!" replacing "...?" -- a statement/exclamation
+        # is a different speech act than a question, even if the words mostly match.
+        original_is_question = original.strip().endswith("?")
+        candidate_is_question = "?" in candidate
+        if original_is_question and not candidate_is_question:
+            reasons.append("original is a question but variant has no '?' (sentence-type drift)")
 
         # Rough sentence count: split on .!? and drop empty fragments
         sentence_count = len([s for s in re.split(r"[.!?]+", candidate) if s.strip()])
