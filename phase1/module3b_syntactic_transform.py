@@ -61,6 +61,61 @@ ANTONYMS = {
 
 WH_WORDS = {"what", "who", "where", "when", "why", "how", "which", "whom"}
 
+# Common irregular verbs likely to show up in factual/trivia-style queries
+# this project targets ("Who wrote X", "Who discovered Y", "Who painted Z").
+# Naive lemma+"ed" gets every one of these wrong (write->writed instead of
+# written, see->seed instead of seen) -- exactly the bug found in testing.
+# Not exhaustive; passive_voice() returns None (skips) for anything not
+# covered here or by the regular-verb rule, rather than guessing.
+IRREGULAR_PAST_PARTICIPLES = {
+    "write": "written", "see": "seen", "give": "given", "take": "taken",
+    "eat": "eaten", "break": "broken", "speak": "spoken", "wake": "woken",
+    "drive": "driven", "ride": "ridden", "rise": "risen", "choose": "chosen",
+    "steal": "stolen", "freeze": "frozen", "fall": "fallen", "forget": "forgotten",
+    "discover": "discovered",  # regular, listed for clarity since it's common here
+    "paint": "painted", "build": "built", "find": "found", "make": "made",
+    "send": "sent", "bring": "brought", "buy": "bought",
+    "catch": "caught", "teach": "taught", "think": "thought", "win": "won",
+    "lose": "lost", "leave": "left", "feel": "felt", "tell": "told",
+    "sell": "sold", "hold": "held", "lead": "led", "read": "read",
+    "say": "said", "pay": "paid", "meet": "met", "sit": "sat", "sing": "sung",
+    "begin": "begun", "drink": "drunk", "swim": "swum", "fly": "flown",
+    "throw": "thrown", "draw": "drawn", "grow": "grown", "know": "known",
+    "show": "shown", "blow": "blown",
+}
+
+
+def _past_participle(lemma):
+    """
+    Returns the past participle for a verb lemma, or None if unknown.
+    Checks the irregular table first; falls back to regular -ed spelling
+    rules (double consonant, drop-e, etc.) only for lemmas NOT in the
+    irregular list -- since applying regular rules to an irregular verb
+    is exactly how "wrote" -> "writed" happened.
+    """
+    lemma = lemma.lower()
+    if lemma in IRREGULAR_PAST_PARTICIPLES:
+        return IRREGULAR_PAST_PARTICIPLES[lemma]
+
+    # Heuristic check: if this lemma looks like it's probably irregular
+    # (common irregular verb endings) but isn't in our table, refuse to
+    # guess rather than risk another "writed"-style error.
+    likely_irregular_endings = ("ow", "ear", "ing", "ink", "ind")
+    if any(lemma.endswith(suffix) for suffix in likely_irregular_endings):
+        return None
+
+    # Regular verb spelling rules
+    if lemma.endswith("e"):
+        return lemma + "d"
+    if lemma.endswith("y") and len(lemma) > 1 and lemma[-2] not in "aeiou":
+        return lemma[:-1] + "ied"
+    if len(lemma) >= 3 and lemma[-1] not in "aeiouwxy" and lemma[-2] in "aeiou" and lemma[-3] not in "aeiou":
+        # short vowel + single final consonant -> double it (e.g. "chat" -> "chatted")
+        # but skip this for longer/common verbs where it's more often wrong than right
+        if len(lemma) <= 5:
+            return lemma + lemma[-1] + "ed"
+    return lemma + "ed"
+
 
 class SyntacticTransformer:
     """
@@ -98,11 +153,15 @@ class SyntacticTransformer:
         body = stripped[:-1]  # drop the question mark
         # "What is the capital of France" -> rephrase as an indirect question
         if first_token == "what" and len(doc) > 1 and doc[1].lemma_ == "be":
-            # "What is X" -> "Tell me what X is" reads awkwardly for most
-            # cases; "Tell me X" (dropping "what is") is more natural and
-            # still unambiguously the same request.
-            rest = stripped[len(doc[0].text) + len(doc[1].text):-1].strip()
-            return f"Tell me {rest}."
+            # "What is X" -> "Tell me X" (dropping "what is") is more natural
+            # than "Tell me what X is". Use doc[2].idx (spaCy's real character
+            # offset for the 3rd token) to slice, rather than manually summing
+            # token text lengths -- that approach broke on whitespace and ate
+            # part of the next word (produced "Tell me s the capital..." once).
+            if len(doc) > 2:
+                rest = stripped[doc[2].idx : -1].strip()
+                return f"Tell me {rest}."
+            return None
         else:
             # General case: "Who wrote X?" -> "Tell me who wrote X."
             return f"Tell me {body[0].lower()}{body[1:]}."
@@ -127,32 +186,41 @@ class SyntacticTransformer:
         if original_word[0].isupper():
             antonym = antonym.capitalize()
 
-        # Build the result token-by-token using the exact matched index,
-        # rather than a blind string .replace() -- a blind replace risks
-        # hitting an earlier occurrence of the same substring elsewhere in
-        # the sentence (e.g. if the antonym word coincidentally already
-        # appears earlier), which would silently produce the wrong sentence.
+        # Find where to insert "not": if the adjective is preceded by a
+        # determiner ("a good conductor"), "not" goes BEFORE the determiner
+        # ("not a bad conductor"), not directly before the adjective --
+        # "a not bad conductor" is grammatically wrong. Walk backward from
+        # the adjective to find a contiguous det/advmod run to insert before.
+        insert_idx = idx
+        i = idx - 1
+        while i >= 0 and doc[i].dep_ in ("det", "advmod") and doc[i].head.i == idx:
+            insert_idx = i
+            i -= 1
+
         tokens = [tok.text_with_ws for tok in doc]
-        tokens[idx] = "not " + antonym + doc[idx].whitespace_
+        tokens[idx] = antonym + doc[idx].whitespace_
+        tokens.insert(insert_idx, "not ")
         return "".join(tokens)
 
     def passive_voice(self, text):
         """
-        Converts a simple Subject-Verb-Object sentence to passive voice.
-        "The dog chased the cat." -> "The cat was chased by the dog."
+        Converts a simple Subject-Verb-Object DECLARATIVE sentence to passive
+        voice. "The dog chased the cat." -> "The cat was chased by the dog."
         Only fires on sentences spaCy parses with a clean single nsubj +
         ROOT verb + dobj pattern -- anything more complex is skipped
         rather than risking a broken rewrite.
 
-        CAVEAT (untested as of writing -- verify carefully on first real run):
-        the past-participle logic (lemma + "ed") is naive and WILL mishandle
-        irregular verbs ("caught" != "catch"+"ed", "wrote" != "write"+"ed").
-        This module hasn't been run against a real spaCy install yet (this
-        sandbox can't reach the model download). Treat the first Colab run
-        of this specific rule as a real test, not a formality -- check every
-        passive-voice output by eye before trusting it in the pipeline.
+        Explicitly refuses to fire on questions: "passive voice of a
+        question" isn't a coherent transformation (e.g. it previously
+        turned "Who wrote Romeo and Juliet?" into "The Romeo was writed
+        by Who." -- nonsensical, and also exposed the irregular-verb bug
+        below). Declarative-only is the correct scope for this rule.
         """
-        doc = self.nlp(text.strip())
+        stripped = text.strip()
+        if stripped.endswith("?"):
+            return None  # passive voice doesn't apply to questions
+
+        doc = self.nlp(stripped)
 
         root = None
         subject = None
@@ -169,7 +237,9 @@ class SyntacticTransformer:
         if root is None or subject is None or obj is None:
             return None  # not a clean SVO sentence -- skip
 
-        # Build subject/object noun phrases (include determiners/compounds)
+        # Build subject/object noun phrases (include determiners/compounds),
+        # preserving each token's original capitalization and using the
+        # ORIGINAL surface text, not a lowercased/recapitalized guess.
         def phrase_for(token):
             span_tokens = [t for t in token.subtree if t.dep_ in ("det", "compound", "amod") or t == token]
             span_tokens.sort(key=lambda t: t.i)
@@ -184,12 +254,25 @@ class SyntacticTransformer:
         if root.tag_ != "VBD":
             return None  # only handling simple past tense for now
 
-        participle = root.lemma_ + "ed" if not root.lemma_.endswith("e") else root.lemma_ + "d"
+        participle = _past_participle(root.lemma_)
+        if participle is None:
+            return None  # unknown irregular verb -- skip rather than guess wrong
+
         be_verb = "were" if subject.tag_ == "NNS" else "was"
 
-        return f"The {obj_phrase.split(' ', 1)[-1] if obj_phrase.lower().startswith('the ') else obj_phrase} {be_verb} {participle} by {subj_phrase.lower() if not subj_phrase[0].isupper() else subj_phrase}.".replace(
-            "The the", "The"
-        )
+        # New subject is the object phrase, capitalized as a sentence start
+        # (first letter upper, rest of the phrase untouched -- not blindly
+        # re-capitalizing every word).
+        new_subject = obj_phrase[0].upper() + obj_phrase[1:] if obj_phrase else obj_phrase
+        # New "by" actor is the original subject phrase, lowercased ONLY if
+        # it isn't a proper noun (check spaCy's own tag, not a guess based
+        # on string position -- "The dog" -> "the dog" but "Who" stays "Who").
+        if subject.pos_ == "PROPN" or subject.tag_ == "WP":
+            by_phrase = subj_phrase
+        else:
+            by_phrase = subj_phrase[0].lower() + subj_phrase[1:] if subj_phrase else subj_phrase
+
+        return f"{new_subject} {be_verb} {participle} by {by_phrase}."
 
     def generate_candidates(self, query):
         """
