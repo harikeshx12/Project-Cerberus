@@ -89,9 +89,19 @@ class QQPParaphraseDataset(Dataset):
         }
 
 
-def finetune(epochs=2, learning_rate=3e-4, batch_size=16, max_train_examples=20000):
+def finetune(epochs=5, learning_rate=2e-4, batch_size=16, max_train_examples=20000):
     """
     Fine-tunes t5-small on QQP paraphrase pairs.
+
+    Defaults changed after the first real run: 2 epochs at lr=3e-4 left the
+    model undertrained -- loss only dropped 1.78->1.57, and the quick-test
+    output showed the classic underfitting signature (mostly copying the
+    input verbatim, occasional incoherent garbling), not real paraphrasing.
+    More data wouldn't fix this -- 20k pairs is already varied enough; the
+    model simply hadn't trained long enough to move past the "copy the
+    input" local optimum. Bumped to 5 epochs and dropped the learning rate
+    slightly (3e-4 -> 2e-4) so the extra epochs refine the task rather than
+    risk overshooting once the model starts actually learning to paraphrase.
 
     max_train_examples caps training data size (default 20k pairs, i.e. 10k
     QQP rows doubled for symmetry) to keep this runnable in a reasonable
