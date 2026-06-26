@@ -8,7 +8,8 @@ pivot) or syntactic transforms (rule-based structural rewrites). A model
 trained specifically on "is this a paraphrase" should produce more natural
 variety than either.
 
-QQP schema (verified against the real HuggingFace dataset card, glue/qqp):
+QQP schema (verified against the real HuggingFace dataset card, nyu-mll/glue,
+qqp config):
     {"question1": str, "question2": str, "label": 0 or 1, "idx": int}
     label=1 means question1 and question2 ARE paraphrases of each other.
 We only train on label=1 pairs -- label=0 pairs are explicitly NOT
@@ -104,8 +105,13 @@ def finetune(epochs=2, learning_rate=3e-4, batch_size=16, max_train_examples=200
     tokenizer = AutoTokenizer.from_pretrained(config.PARAPHRASE_BASE_MODEL)
     model = AutoModelForSeq2SeqLM.from_pretrained(config.PARAPHRASE_BASE_MODEL).to(device)
 
-    print("Loading QQP dataset (glue/qqp) ...")
-    qqp = load_dataset("glue", "qqp", split="train")
+    print("Loading QQP dataset (nyu-mll/glue, qqp config) ...")
+    # Using the fully-qualified "nyu-mll/glue" path, not the legacy bare
+    # "glue" alias -- the old shorthand's loading script is incompatible
+    # with newer huggingface_hub URI parsing (hit this directly: HfUriError
+    # on "glue" because it isn't in "namespace/name" format). nyu-mll/glue
+    # is the actively maintained canonical path for the same dataset.
+    qqp = load_dataset("nyu-mll/glue", "qqp", split="train")
     print(f"QQP train split: {len(qqp)} total rows (mixed label 0/1)")
 
     dataset = QQPParaphraseDataset(qqp, tokenizer, max_examples=max_train_examples)
