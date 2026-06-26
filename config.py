@@ -57,7 +57,16 @@ NLI_MODEL_NAME = _FINETUNED_NLI_PATH if _is_complete_checkpoint(_FINETUNED_NLI_P
 
 TRANSLATION_EN_FR = "Helsinki-NLP/opus-mt-en-fr"
 TRANSLATION_FR_EN = "Helsinki-NLP/opus-mt-fr-en"
-PARAPHRASE_BASE_MODEL = "t5-small"             # fine-tuned later on Quora Question Pairs
+
+# PARAPHRASE_MODEL_NAME points to the fine-tuned paraphrase generator
+# (Module 1.3c, trained on QQP) if a complete checkpoint exists, otherwise
+# falls back to the raw t5-small base (which hasn't learned to paraphrase
+# specifically, but still loads and runs).
+_FINETUNED_PARAPHRASE_PATH = os.path.join(CHECKPOINT_DIR, "paraphrase_finetuned")
+PARAPHRASE_BASE_MODEL = "t5-small"
+PARAPHRASE_MODEL_NAME = (
+    _FINETUNED_PARAPHRASE_PATH if _is_complete_checkpoint(_FINETUNED_PARAPHRASE_PATH) else PARAPHRASE_BASE_MODEL
+)
 
 # ---- Weights & Biases ----
 WANDB_PROJECT = "project-cerberus"
