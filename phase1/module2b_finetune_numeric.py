@@ -108,11 +108,39 @@ def finetune(
 
     model.eval()
 
-    # Save the fine-tuned checkpoint to Drive so it survives runtime resets
-    save_path = os.path.join(config.CHECKPOINT_DIR, "semantic_equivalence_finetuned")
-    os.makedirs(save_path, exist_ok=True)
-    model.save_pretrained(save_path)
-    tokenizer.save_pretrained(save_path)
+    # Save the fine-tuned checkpoint to Drive so it survives runtime resets.
+    #
+    # Save to a TEMP folder first, then rename into place only after both
+    # save_pretrained() calls fully complete. This means an interrupted
+    # save (Colab disconnect, etc.) leaves a stray temp folder instead of
+    # a half-written checkpoint at the real path -- which previously broke
+    # config.py's auto-detection until manually deleted.
+    final_path = os.path.join(config.CHECKPOINT_DIR, "semantic_equivalence_finetuned")
+    temp_path = final_path + "_tmp_saving"
+
+    if os.path.exists(temp_path):
+        import shutil
+        shutil.rmtree(temp_path)
+    os.makedirs(temp_path, exist_ok=True)
+
+    model.save_pretrained(temp_path)
+    tokenizer.save_pretrained(temp_path)
+
+    # Verify the save actually produced a weights file before committing to it
+    has_weights = os.path.exists(os.path.join(temp_path, "model.safetensors")) or os.path.exists(
+        os.path.join(temp_path, "pytorch_model.bin")
+    )
+    if not has_weights:
+        raise RuntimeError(
+            f"Save appears incomplete -- no weights file found in {temp_path}. "
+            f"Not moving into place at {final_path}. Check Drive connection and retry."
+        )
+
+    if os.path.exists(final_path):
+        import shutil
+        shutil.rmtree(final_path)
+    os.rename(temp_path, final_path)
+    save_path = final_path
     print(f"\nSaved fine-tuned model to: {save_path}")
 
     return model, tokenizer, save_path

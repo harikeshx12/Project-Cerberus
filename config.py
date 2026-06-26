@@ -31,12 +31,29 @@ for d in (CHECKPOINT_DIR, LOG_DIR, DATA_DIR):
 BASE_MODEL_NAME = "google/flan-t5-base"        # the defender model we're attacking
 
 # NLI_MODEL_NAME points to the fine-tuned Semantic Equivalence Classifier
-# (patched on numeric semantics in Module 1.2b) if it exists on Drive,
-# otherwise falls back to the raw off-the-shelf model. This means every
-# module downstream automatically benefits from the fine-tune without
-# needing to know it happened.
+# (patched on numeric semantics in Module 1.2b) if a COMPLETE checkpoint
+# exists on Drive, otherwise falls back to the raw off-the-shelf model.
+#
+# Important: we check for the actual weight file, not just the folder --
+# a folder can exist with only config.json/tokenizer files if a previous
+# save_pretrained() got interrupted (e.g. Colab disconnect mid-write).
+# Checking folder existence alone caused exactly that failure once already:
+# a half-written checkpoint permanently broke auto-detection until manually
+# deleted. This is now self-healing instead.
 _FINETUNED_NLI_PATH = os.path.join(CHECKPOINT_DIR, "semantic_equivalence_finetuned")
-NLI_MODEL_NAME = _FINETUNED_NLI_PATH if os.path.exists(_FINETUNED_NLI_PATH) else "roberta-large-mnli"
+
+
+def _is_complete_checkpoint(path):
+    if not os.path.isdir(path):
+        return False
+    has_weights = os.path.exists(os.path.join(path, "model.safetensors")) or os.path.exists(
+        os.path.join(path, "pytorch_model.bin")
+    )
+    has_config = os.path.exists(os.path.join(path, "config.json"))
+    return has_weights and has_config
+
+
+NLI_MODEL_NAME = _FINETUNED_NLI_PATH if _is_complete_checkpoint(_FINETUNED_NLI_PATH) else "roberta-large-mnli"
 
 TRANSLATION_EN_FR = "Helsinki-NLP/opus-mt-en-fr"
 TRANSLATION_FR_EN = "Helsinki-NLP/opus-mt-fr-en"
