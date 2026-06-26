@@ -32,6 +32,7 @@ from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, GPT2LMHeadModel, 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import config
 from phase1.module2_semantic_equivalence import SemanticEquivalenceClassifier
+from phase1.module3b_syntactic_transform import SyntacticTransformer
 
 
 class BackTranslationStrategy:
@@ -203,27 +204,48 @@ class VariantGenerator:
     def __init__(self, device=None):
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.back_translation = BackTranslationStrategy(device=self.device)
+        self.syntactic_transformer = SyntacticTransformer()
         self.equivalence_classifier = SemanticEquivalenceClassifier()
         self.fluency_filter = FluencyFilter(device=self.device)
         self.structural_check = StructuralSanityCheck()
-        # Strategy B (syntactic) and Strategy C (paraphrase) will be
-        # initialized here once added.
+        # Strategy C (controlled paraphrase) will be added the same way:
+        # generate (strategy_name, candidate) pairs in _collect_raw_candidates,
+        # everything else below is strategy-agnostic.
+
+    def _collect_raw_candidates(self, query, n):
+        """
+        Returns a list of (strategy_name, candidate_text) pairs from every
+        strategy. Adding a new strategy means adding one line here -- the
+        filtering pipeline below doesn't need to change.
+        """
+        tagged = []
+
+        for candidate in self.back_translation.generate_candidates(query, n=n * 3):
+            tagged.append(("back_translation", candidate))
+
+        for candidate in self.syntactic_transformer.generate_candidates(query):
+            tagged.append(("syntactic_transform", candidate))
+
+        return tagged
 
     def generate(self, query, n=10, min_confidence=0.5, verbose_rejects=False):
         """
         Generate up to n semantically-equivalent, fluent, well-formed
-        variants of query.
+        variants of query, combining every available strategy.
 
-        Over-generates raw candidates (3x n) then returns the top n that
-        pass all THREE gates, ranked by semantic confidence.
+        Each candidate -- regardless of which strategy produced it -- goes
+        through the SAME three gates (semantic equivalence, fluency,
+        structural sanity) before being accepted. Rule-based candidates from
+        SyntacticTransformer don't get a free pass for being deterministic;
+        they're checked exactly like back-translation candidates are.
         """
-        raw_candidates = self.back_translation.generate_candidates(query, n=n * 3)
+        raw_candidates = self._collect_raw_candidates(query, n)
 
         seen = {query.strip().lower()}
         scored_variants = []
         rejected = []
 
-        for candidate in raw_candidates:
+        for strategy_name, candidate in raw_candidates:
             normalized = candidate.strip().lower()
             if not candidate.strip() or normalized in seen:
                 continue
@@ -248,7 +270,7 @@ class VariantGenerator:
                 "text": candidate,
                 "confidence": result["confidence"],
                 "perplexity": round(ppl, 1),
-                "strategy": "back_translation",
+                "strategy": strategy_name,
             })
 
         if verbose_rejects:
@@ -260,7 +282,7 @@ class VariantGenerator:
 
 
 def main():
-    print("\nMODULE 1.3 — VARIANT GENERATOR (Back-translation)\n")
+    print("\nMODULE 1.3 — VARIANT GENERATOR (Back-translation + Syntactic Transformation)\n")
 
     gen = VariantGenerator()
 
@@ -283,7 +305,12 @@ def main():
         else:
             print("  KEPT:")
             for i, v in enumerate(variants, 1):
-                print(f"  {i:>2}. (conf={v['confidence']:.3f}, ppl={v['perplexity']:.1f}) {v['text']}")
+                print(f"  {i:>2}. [{v['strategy']:<19}] (conf={v['confidence']:.3f}, ppl={v['perplexity']:.1f}) {v['text']}")
+
+            strategy_counts = {}
+            for v in variants:
+                strategy_counts[v["strategy"]] = strategy_counts.get(v["strategy"], 0) + 1
+            print(f"  -- strategy breakdown: {strategy_counts}")
         print()
 
 
