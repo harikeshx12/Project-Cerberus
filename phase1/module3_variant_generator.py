@@ -24,6 +24,7 @@ without needing to change how callers use this class.
 import os
 import sys
 import math
+import re
 
 import torch
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, GPT2LMHeadModel, GPT2TokenizerFast
@@ -103,9 +104,16 @@ class FluencyFilter:
     Uses GPT-2-small perplexity as a cheap fluency proxy: garbled or
     broken text gets assigned much higher perplexity (the model is
     "surprised" by it) than fluent, grammatical English.
+
+    Threshold calibrated from real Module 1.3 output: confirmed-garbage
+    candidates ("WHO HAVE ROMEO AND JULYOTH?", "How many moon Mars have he?")
+    scored 900-2700+ ppl, while valid-but-slightly-informal phrasing
+    ("How many moons has Mars?") scored 300-550. 400 sits in the gap --
+    catches the former, spares the latter. Revisit if new failure patterns
+    show up once Strategy B/C are added.
     """
 
-    def __init__(self, device=None, max_perplexity=180.0):
+    def __init__(self, device=None, max_perplexity=400.0):
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.max_perplexity = max_perplexity
 
@@ -129,13 +137,52 @@ class FluencyFilter:
         return ppl <= self.max_perplexity, ppl
 
 
+class StructuralSanityCheck:
+    """
+    Catches a failure mode perplexity can't: run-on or duplicated text where
+    every individual clause is fluent on its own, but stitched together
+    they aren't a coherent single question.
+
+    Example that passed BOTH the semantic and perplexity gates in testing:
+      "Can't you... cant Mars be so amazing. So, how many moons is Mars on?"
+      "How many moons? How many moons has Mars?"
+
+    Each fragment reads fine in isolation -- GPT-2 perplexity doesn't
+    penalize it much -- but it's not a clean single-question rephrase of
+    the original. Checked with cheap string heuristics, not a model.
+    """
+
+    def __init__(self, max_length_ratio=2.5, max_question_marks=1, max_sentences=1):
+        self.max_length_ratio = max_length_ratio
+        self.max_question_marks = max_question_marks
+        self.max_sentences = max_sentences
+
+    def is_sane(self, original, candidate):
+        reasons = []
+
+        len_ratio = len(candidate) / max(len(original), 1)
+        if len_ratio > self.max_length_ratio:
+            reasons.append(f"too long ({len_ratio:.1f}x original length)")
+
+        if candidate.count("?") > self.max_question_marks:
+            reasons.append(f"{candidate.count('?')} question marks (looks like multiple questions)")
+
+        # Rough sentence count: split on .!? and drop empty fragments
+        sentence_count = len([s for s in re.split(r"[.!?]+", candidate) if s.strip()])
+        if sentence_count > self.max_sentences:
+            reasons.append(f"{sentence_count} sentence-like fragments (likely a run-on)")
+
+        return (len(reasons) == 0), reasons
+
+
 class VariantGenerator:
     """
     Orchestrates variant-generation strategies and filters every candidate
-    through TWO gates before returning it:
+    through THREE gates before returning it:
       1. SemanticEquivalenceClassifier — does it mean the same thing?
-      2. FluencyFilter — is it actually grammatical English, or garbled
-         translation noise that happens to share keywords with the original?
+      2. FluencyFilter — is it grammatical English, not translation noise?
+      3. StructuralSanityCheck — is it one coherent question, not a run-on
+         or duplicated fragment that happens to be locally fluent?
 
     Usage:
         gen = VariantGenerator()
@@ -148,16 +195,17 @@ class VariantGenerator:
         self.back_translation = BackTranslationStrategy(device=self.device)
         self.equivalence_classifier = SemanticEquivalenceClassifier()
         self.fluency_filter = FluencyFilter(device=self.device)
+        self.structural_check = StructuralSanityCheck()
         # Strategy B (syntactic) and Strategy C (paraphrase) will be
         # initialized here once added.
 
     def generate(self, query, n=10, min_confidence=0.5, verbose_rejects=False):
         """
-        Generate up to n semantically-equivalent, fluent variants of query.
+        Generate up to n semantically-equivalent, fluent, well-formed
+        variants of query.
 
-        Over-generates raw candidates (3x n, bumped up from 2x since the
-        fluency filter now rejects some additional candidates) then returns
-        the top n that pass BOTH gates, ranked by semantic confidence.
+        Over-generates raw candidates (3x n) then returns the top n that
+        pass all THREE gates, ranked by semantic confidence.
         """
         raw_candidates = self.back_translation.generate_candidates(query, n=n * 3)
 
@@ -179,6 +227,11 @@ class VariantGenerator:
             fluent, ppl = self.fluency_filter.is_fluent(candidate)
             if not fluent:
                 rejected.append((candidate, "fluency", ppl))
+                continue
+
+            sane, reasons = self.structural_check.is_sane(query, candidate)
+            if not sane:
+                rejected.append((candidate, f"structural ({'; '.join(reasons)})", 0))
                 continue
 
             scored_variants.append({
