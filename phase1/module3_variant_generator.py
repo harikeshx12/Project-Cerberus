@@ -160,7 +160,19 @@ class StructuralSanityCheck:
         self.max_question_marks = max_question_marks
         self.max_sentences = max_sentences
 
-    def is_sane(self, original, candidate):
+    def is_sane(self, original, candidate, allow_sentence_type_change=False):
+        """
+        allow_sentence_type_change=True skips the question-mark-drift check
+        specifically. This exists because SyntacticTransformer's
+        question_to_declarative rule DELIBERATELY turns a question into a
+        statement ("What is X?" -> "Tell me X.") -- that's the rule's whole
+        purpose, not a defect. The drift check was built to catch
+        back-translation accidentally losing the '?' by noise; it would
+        incorrectly reject every correct declarative-framing output if
+        applied universally. Other structural checks (run-on length,
+        multiple question marks, sentence count) still apply regardless --
+        only this one specific check is strategy-conditional.
+        """
         reasons = []
 
         len_ratio = len(candidate) / max(len(original), 1)
@@ -170,13 +182,13 @@ class StructuralSanityCheck:
         if candidate.count("?") > self.max_question_marks:
             reasons.append(f"{candidate.count('?')} question marks (looks like multiple questions)")
 
-        # If the original is a question, the variant should still read as one.
-        # Catches cases like "...!" replacing "...?" -- a statement/exclamation
-        # is a different speech act than a question, even if the words mostly match.
-        original_is_question = original.strip().endswith("?")
-        candidate_is_question = "?" in candidate
-        if original_is_question and not candidate_is_question:
-            reasons.append("original is a question but variant has no '?' (sentence-type drift)")
+        # If the original is a question, the variant should still read as one
+        # -- UNLESS this strategy intentionally changes sentence type.
+        if not allow_sentence_type_change:
+            original_is_question = original.strip().endswith("?")
+            candidate_is_question = "?" in candidate
+            if original_is_question and not candidate_is_question:
+                reasons.append("original is a question but variant has no '?' (sentence-type drift)")
 
         # Rough sentence count: split on .!? and drop empty fragments
         sentence_count = len([s for s in re.split(r"[.!?]+", candidate) if s.strip()])
@@ -261,7 +273,10 @@ class VariantGenerator:
                 rejected.append((candidate, "fluency", ppl))
                 continue
 
-            sane, reasons = self.structural_check.is_sane(query, candidate)
+            sane, reasons = self.structural_check.is_sane(
+                query, candidate,
+                allow_sentence_type_change=(strategy_name == "syntactic_transform"),
+            )
             if not sane:
                 rejected.append((candidate, f"structural ({'; '.join(reasons)})", 0))
                 continue
